@@ -15,6 +15,7 @@ from multiprocessing import Process, Queue
 
 import pandas as pd
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
 from pydantic import ValidationError
@@ -31,6 +32,7 @@ FETCH_INTERVAL      = int(os.getenv("FETCH_INTERVAL_SECONDS", "300"))  # seconds
 DEBOUNCE_SECONDS    = float(os.getenv("DEBOUNCE_SECONDS", ".5"))
 ALLOWED_EXTS        = {".json"}
 CACHE_FILENAME      = ".dir_cache.json"
+SCHEDULE_SLOTS    = ["06:30", "09:30", "12:30"]           # 3x per trading day :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
 
 # ─── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,15 @@ def log_event(event: dict):
     """
     event.setdefault("timestamp", current_utc_timestamp())
     print(json.dumps(event), flush=True)
+
+def load_json_with_retries(path: Path, retries: int = 3, delay: float = 0.1) -> dict:
+    for _ in range(retries):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, FileNotFoundError):
+            time.sleep(delay)
+    # final attempt, let exception bubble
+    return json.loads(path.read_text(encoding="utf-8"))
 
 # ─── Directory Monitor Process ─────────────────────────────────────────────────
 
@@ -259,7 +270,7 @@ class DirectoryMonitorProcess(mp.Process):
             clean = validated.model_dump(mode="json")
             canonical = json.dumps(clean, sort_keys=True)
             new_hash = self.compute_hash(canonical)
-            
+
             old = self._cache.get(tid)
             if not old or old["hash"] != new_hash:
                 # update cache & path_map
@@ -314,113 +325,389 @@ class DirectoryMonitorProcess(mp.Process):
             obs.join()
             log_event({"worker": self.name, "action": "exited", "trade_id": None})
 
-# ─── Fetch Ticker Process ───────────────────────────────────────────────────────
-
+# ─── Worker that fetches & writes CSVs ──────────────────────────────────────────
 class YFinanceWorker:
     """
-    Fetches market data for active trades and appends to per‐ticker CSV.
+    Fetch market data for active trades and append to per-ticker CSV.
+
+    Parameters:
+    - trade_ledger_path: Path to JSON file containing trade records
+    - output_dir: Directory to write per-ticker CSVs
+    - rsi_period: Look-back period for RSI calculation
+    - date_field: Optional key name in JSON for the expiration date
     """
-    def __init__(self, trades_csv: Path, output_dir: Path, rsi_period: int = 14):
-        self.trades_csv = trades_csv
+    def __init__(
+        self,
+        trade_ledger_path: Path,
+        output_dir: Path,
+        rsi_period: int = 14,
+        date_field: str = None
+    ):
+        self.trade_ledger_path = trade_ledger_path
         self.output_dir = output_dir
         self.rsi_period = rsi_period
-        self.name       = "fetch_ticker_process"
+        self.date_field = date_field  # explicit JSON key for date
+        self.name = "fetch_ticker_process"
+        self.option_chain_cache = {}  # (ticker, expiry_date) → OptionChain
+
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logging.getLogger().setLevel(logging.INFO)
 
+    def process_trades(self, trades: list[dict]):
+        """
+        Bulk-fetch minute bars for given trades, then fetch/cached option chains,
+        upsert to CSV, and log appropriately.
+        """
+        tickers = sorted({t["ticker"] for t in trades})
+        if not tickers:
+            return
+
+        # 1) Bulk history download
+        try:
+            bulk = yf.download(
+                tickers,
+                period="5d",
+                interval="1m",
+                group_by="ticker",
+                threads=True
+            )
+        except Exception as e:
+            log_event({"worker": self.name, "action": "bulk_history_failed", "error": str(e)})
+            return
+
+        for trade in trades:
+            ticker = trade["ticker"]
+            trade_id = trade["trade_id"]
+
+            # 2) Extract per-ticker DataFrame, skip if missing
+            try:
+                df = bulk if len(tickers) == 1 else bulk[ticker]
+            except (KeyError, ValueError):
+                log_event({
+                    "worker": self.name,
+                    "action": "history_missing",
+                    "trade_id": trade_id,
+                    "ticker": ticker
+                })
+                continue
+
+            # 3) Guard against empty or missing Close series
+            if "Close" not in df or df["Close"].empty:
+                log_event({
+                    "worker": self.name,
+                    "action": "no_close_data",
+                    "trade_id": trade_id,
+                    "ticker": ticker
+                })
+                continue
+
+            close = df["Close"]
+
+            # 4) Ensure enough points for SMA/RSI
+            min_len = max(self.rsi_period, 50)
+            if len(close) < min_len:
+                log_event({
+                    "worker": self.name,
+                    "action": "insufficient_history",
+                    "trade_id": trade_id,
+                    "ticker": ticker,
+                    "rows": len(close)
+                })
+                continue
+
+            # 5) Compute indicators
+            price = float(close.iloc[-1])
+            sma   = float(close.rolling(50).mean().iloc[-1])
+            rsi   = self.calculate_rsi(close)
+
+            # 6) Option chain (with cache, unchanged)
+            exp_dates = yf.Ticker(ticker).options
+            expiry    = trade["expiration_date"]
+            if expiry not in exp_dates and exp_dates:
+                expiry = exp_dates[0]
+            cache_key = (ticker, expiry)
+            chain = self.option_chain_cache.get(cache_key)
+            if chain is None:
+                try:
+                    chain = yf.Ticker(ticker).option_chain(expiry)
+                    self.option_chain_cache[cache_key] = chain
+                except YFRateLimitError:
+                    log_event({
+                        "worker": self.name,
+                        "action": "rate_limit_chain",
+                        "trade_id": trade_id,
+                        "ticker": ticker
+                    })
+                    continue
+
+            data = {
+                "snapshot_timestamp": current_utc_timestamp(),
+                "price":              price,
+                "sma":                sma,
+                "rsi":                rsi,
+                "calls":              chain.calls,
+                "puts":               chain.puts,
+            }
+
+            # 7) Upsert & log
+            self._atomic_upsert(ticker, trade_id, data)
+            log_event({
+                "worker":   self.name,
+                "action":   "upserted",
+                "trade_id": trade_id,
+                "ticker":   ticker
+            })
+
     def calculate_rsi(self, series: pd.Series, period: int) -> float:
-        delta  = series.diff().dropna()
-        gains  = delta.clip(lower=0)
+        delta = series.diff().dropna()
+        gains = delta.clip(lower=0)
         losses = -delta.clip(upper=0)
-        avg_g  = gains.rolling(period).mean().iloc[-1]
-        avg_l  = losses.rolling(period).mean().iloc[-1]
-        if avg_l == 0:
+        avg_gain = gains.rolling(period, min_periods=period).mean().iloc[-1]
+        avg_loss = losses.rolling(period, min_periods=period).mean().iloc[-1]
+        if avg_loss == 0:
             return 100.0
-        rs = avg_g / avg_l
-        return 100 - (100 / (1 + rs))
+        rs = avg_gain / avg_loss
+        return float(100 - (100 / (1 + rs)))
 
     def load_trades(self) -> list[dict]:
-        df = pd.read_csv(self.trades_csv, parse_dates=["expiry_date"])
-        mask = df.status.isin(["Active", "Spectating"]) & ~df.manual_closed
-        return df[mask].to_dict(orient="records")
+        """
+        Read the JSON ledger from self.trade_ledger_path (dict or list),
+        validate via Pydantic, and return all valid trades.
+        """
+        # 1) Load raw JSON
+        try:
+            text = self.trade_ledger_path.read_text(encoding="utf-8")
+            raw  = json.loads(text)
+        except Exception as e:
+            log_event({
+                "worker": self.name,
+                "action": "load_ledger_failed",
+                "error": str(e)
+            })
+            return []
 
+        # 2) Normalize to a list of records
+        if isinstance(raw, dict):
+            records = list(raw.values())
+        elif isinstance(raw, list):
+            records = raw
+        else:
+            log_event({
+                "worker": self.name,
+                "action": "ledger_unexpected_format",
+                "error": f"Expected dict or list, got {type(raw)}"
+            })
+            return []
+
+        # 3) Validate each via TradeInputModel
+        valid: list[dict] = []
+        for entry in records:
+            try:
+                trade = TradeInputModel(**entry).model_dump()
+                valid.append(trade)
+            except ValidationError as ve:
+                errs = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in ve.errors())
+                log_event({
+                    "worker":   self.name,
+                    "action":   "trade_validation_failed",
+                    "trade_id": entry.get("trade_id"),
+                    "error":    errs
+                })
+
+        # 4) Return every validated trade unfiltered
+        return valid
+    
     def fetch_trade_data(self, trade: dict) -> dict:
-        ticker = trade["ticker"]
-        y      = yf.Ticker(ticker)
-        hist   = y.history(period="5d", interval="1m")
-        latest = float(hist["Close"].iloc[-1])
-        sma    = float(hist["Close"].rolling(50).mean().iloc[-1])
-        rsi    = self.calculate_rsi(hist["Close"], self.rsi_period)
+        ticker = trade['ticker']
+        y = yf.Ticker(ticker)
+        hist = y.history(period='5d', interval='1m')
+        latest = float(hist['Close'].iloc[-1])
+        sma = float(hist['Close'].rolling(50).mean().iloc[-1])
+        rsi = self.calculate_rsi(hist['Close'], self.rsi_period)
 
-        # choose expiry
+        # Use normalized 'expiration_date'
         exp_dates = y.options
-        chosen   = trade["expiry_date"].strftime("%Y-%m-%d")
-        if chosen not in exp_dates:
+        chosen = trade['expiration_date'].strftime('%Y-%m-%d')
+        if chosen not in exp_dates and exp_dates:
             chosen = exp_dates[0]
-        opt_chain = y.option_chain(chosen)
-        return {
-            "snapshot_timestamp": current_utc_timestamp(),
-            "price": latest,
-            "sma": sma,
-            "rsi": rsi,
-            # omit raw DataFrames from ledger
+        opt_chain = y.option_chain(chosen) if chosen else None
+
+        data = {
+            'snapshot_timestamp': current_utc_timestamp(),
+            'price': latest,
+            'sma': sma,
+            'rsi': rsi,
         }
+        if opt_chain:
+            data.update({'calls': opt_chain.calls, 'puts': opt_chain.puts})
+        return data
 
     def append_to_csv(self, trade: dict, data: dict):
-        ticker   = trade["ticker"]
+        ticker = trade['ticker']
         out_file = self.output_dir / f"{ticker}.csv"
-        tmp_file = out_file.with_suffix(".csv.tmp")
+        tmp_file = out_file.with_suffix('.csv.tmp')
 
-        row = {"trade_id": trade["trade_id"], **data}
+        row = {'trade_id': trade['trade_id'], **data}
         new_df = pd.DataFrame([row])
-
         if out_file.exists():
-            old = pd.read_csv(out_file, parse_dates=["snapshot_timestamp"])
-            mask = ~((old["trade_id"] == row["trade_id"]) &
-                     (old["snapshot_timestamp"].astype(str) == row["snapshot_timestamp"]))
+            old = pd.read_csv(out_file, parse_dates=['snapshot_timestamp'])
+            mask = ~(
+                (old['trade_id'] == row['trade_id']) &
+                (old['snapshot_timestamp'] == data['snapshot_timestamp'])
+            )
             df = pd.concat([old[mask], new_df], ignore_index=True)
         else:
             df = new_df
-
-        with open(tmp_file, "w", newline="") as f:
+        # Atomic upsert
+        with open(tmp_file, 'w', newline='') as f:
             df.to_csv(f, index=False)
             f.flush(); os.fsync(f.fileno())
         os.replace(tmp_file, out_file)
         logging.info(f"[{self.name}] Upserted {ticker} @ {data['snapshot_timestamp']}")
 
-    def is_expired(self, trade: dict) -> bool:
-        return datetime.utcnow().date() > trade["expiry_date"].date()
+    def is_expired(self, expiration_date) -> bool:
+        """
+        Determine if a trade is expired based on its expiration date.
+        Accepts ISO strings, date, or datetime objects.
+        """
+        # normalize to date
+        if isinstance(expiration_date, str):
+            exp = datetime.fromisoformat(expiration_date).date()
+        elif isinstance(expiration_date, datetime):
+            exp = expiration_date.date()
+        else:
+            exp = expiration_date  # assume it's a date
+        return datetime.now(timezone.utc).date() > exp
 
-    def should_auto_close(self, trade: dict) -> bool:
-        return (datetime.utcnow() + timedelta(hours=3)).date() > trade["expiry_date"].date()
+    def should_auto_close(self, expiration_date) -> bool:
+        """
+        Determine if a trade should auto-close (next fetch would be past expiry).
+        Accepts ISO strings, date, or datetime objects.
+        """
+        if isinstance(expiration_date, str):
+            exp = datetime.fromisoformat(expiration_date)
+        elif isinstance(expiration_date, datetime):
+            exp = expiration_date
+        else:
+            # assume date
+            exp = datetime.combine(expiration_date, datetime.min.time(), tzinfo=timezone.utc)
+        next_fetch = datetime.now(timezone.utc) + timedelta(hours=3)
+        return next_fetch.date() > exp.date()
 
     def run_cycle(self):
         trades = self.load_trades()
-        for t in trades:
-            data = self.fetch_trade_data(t)
-            self.append_to_csv(t, data)
-            # expiry handling
-            if self.is_expired(t):
-                logging.info(f"[{self.name}] Trade {t['trade_id']} expired.")
-            elif self.should_auto_close(t):
-                logging.info(f"[{self.name}] Auto-closing {t['trade_id']}.")
+        for trade in trades:
+            data = self.process_trades(trade)
+            self.append_to_csv(trade, data)
+            if self.is_expired(trade):
+                logging.info(f"[{self.name}] Trade {trade['trade_id']} expired.")
+            elif self.should_auto_close(trade):
+                logging.info(f"[{self.name}] Auto-closing {trade['trade_id']}.")
 
+
+# ─── FetchTickerProcess ────────────────────────────────────────────────────────
 class FetchTickerProcess(mp.Process):
-    """
-    Wraps YFinanceWorker into a long‐running MP process.
-    """
-    def __init__(self, trades_csv: Path, output_dir: Path, interval: int):
+    def __init__(self,
+                 debug_interval: int = None
+                ):
         super().__init__(name="fetch_ticker_process", daemon=True)
-        self.worker   = YFinanceWorker(trades_csv, output_dir)
-        self.interval = interval
+        self.worker    = YFinanceWorker(trade_ledger_path=LEDGER_PATH, output_dir=TIME_SERIES_DIR)
+        self._last_run = {slot: None for slot in SCHEDULE_SLOTS}
+        self.debug_interval = debug_interval
 
     def run(self):
+        if self.debug_interval is not None:
+            self._run_interval_mode()
+        else:
+            self._run_schedule_mode()
+    
+    def _run_interval_mode(self):
+        log_event({
+            "worker":   self.name,
+            "action":   "debug_interval_started",
+            "interval": self.debug_interval
+        })
+        try:
+            while True:
+                # pull all trades and bulk‐fetch
+                trades = self.worker.load_trades()
+                self.worker.process_trades(trades)
+
+                # if you still want your expiry/auto‐close logging here:
+                for t in trades:
+                    if self.worker.is_expired(t["expiration_date"]):
+                        log_event({
+                            "worker":   self.name,
+                            "action":   "expired",
+                            "trade_id": t["trade_id"],
+                            "timestamp": current_utc_timestamp()
+                        })
+                    elif self.worker.should_auto_close(t["expiration_date"]):
+                        log_event({
+                            "worker":   self.name,
+                            "action":   "auto_close",
+                            "trade_id": t["trade_id"],
+                            "timestamp": current_utc_timestamp()
+                        })
+
+                time.sleep(self.debug_interval)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            log_event({"worker": self.name, "action": "debug_interval_exited"})
+    
+    def _run_schedule_mode(self):
         log_event({"worker": self.name, "action": "started", "trade_id": None})
         try:
             while True:
-                self.worker.run_cycle()
-                time.sleep(self.interval)
+                now_utc = datetime.now(timezone.utc)
+                hhmm    = now_utc.strftime("%H:%M")
+                today   = now_utc.date()
+
+                # reload and partition trades for today
+                trades  = self.worker.load_trades()
+                tickers = sorted({t["ticker"] for t in trades})
+                group_size = (len(tickers)+len(SCHEDULE_SLOTS)-1)//len(SCHEDULE_SLOTS)
+
+                for idx, slot in enumerate(SCHEDULE_SLOTS):
+                    if hhmm >= slot and self._last_run[slot] != today:
+                        # determine which tickers this slot handles
+                        start = idx * group_size
+                        end   = start + group_size
+                        my_slice = set(tickers[start:end])
+                        slot_trades = [t for t in trades if t["ticker"] in my_slice]
+
+                        log_event({
+                            "worker": self.name,
+                            "action": "scheduled_run",
+                            "slot": slot,
+                            "count": len(slot_trades)
+                        })
+                        self.worker.process_trades(slot_trades)
+                        # 1) bulk‐fetch & upsert
+                        self.worker.process_trades(slot_trades)
+
+                        # 2) then expiry / auto‐close logging
+                        for t in slot_trades:
+                            exp = t["expiration_date"]
+                            if self.worker.is_expired(exp):
+                                log_event({
+                                    "worker":   self.name,
+                                    "action":   "expired",
+                                    "trade_id": t["trade_id"],
+                                    "timestamp": current_utc_timestamp()
+                                })
+                            elif self.worker.should_auto_close(exp):
+                                log_event({
+                                    "worker":   self.name,
+                                    "action":   "auto_close",
+                                    "trade_id": t["trade_id"],
+                                    "timestamp": current_utc_timestamp()
+                                })
+                        self._last_run[slot] = today
+
+                time.sleep(60)
         except KeyboardInterrupt:
             pass
         finally:
@@ -636,25 +923,21 @@ def main():
 
     # start directory watcher
     dir_p = DirectoryMonitorProcess(TRADE_INPUT_DIR, ledger_q)
-    dir_p.start()
-
-    # start ledger updater
     ledger_p = LedgerUpdaterProcess(ledger_q, 
                                     ledger_path="trade_ledger.json",
                                     trashed_path="trashed_trades.json")
-    ledger_p.start()
-
-    # # start ticker fetcher
-    # fetch_p = FetchTickerProcess(TRADES_CSV, TIME_SERIES_DIR, FETCH_INTERVAL)
-    # fetch_p.start()
+    fetch_p = FetchTickerProcess(debug_interval=30)
+    
+    for p in (dir_p, ledger_p, fetch_p):
+        p.start()
 
     # handle shutdown
     def _shutdown(signum, frame):
         log_event({"worker": "main_process", "action": "shutdown_initiated", "trade_id": None})
         dir_p.terminate()
         # fetch_p.terminate()
-        # signal ledger to exit
         ledger_q.put(None)
+        ledger_p.terminate()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT,  _shutdown)
