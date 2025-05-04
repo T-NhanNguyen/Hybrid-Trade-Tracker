@@ -518,31 +518,6 @@ class YFinanceWorker:
         # 4) Return every validated trade unfiltered
         return valid
     
-    def fetch_trade_data(self, trade: dict) -> dict:
-        ticker = trade['ticker']
-        y = yf.Ticker(ticker)
-        hist = y.history(period='5d', interval='1m')
-        latest = float(hist['Close'].iloc[-1])
-        sma = float(hist['Close'].rolling(50).mean().iloc[-1])
-        rsi = self.calculate_rsi(hist['Close'], self.rsi_period)
-
-        # Use normalized 'expiration_date'
-        exp_dates = y.options
-        chosen = trade['expiration_date'].strftime('%Y-%m-%d')
-        if chosen not in exp_dates and exp_dates:
-            chosen = exp_dates[0]
-        opt_chain = y.option_chain(chosen) if chosen else None
-
-        data = {
-            'snapshot_timestamp': current_utc_timestamp(),
-            'price': latest,
-            'sma': sma,
-            'rsi': rsi,
-        }
-        if opt_chain:
-            data.update({'calls': opt_chain.calls, 'puts': opt_chain.puts})
-        return data
-
     def append_to_csv(self, trade: dict, data: dict):
         ticker = trade['ticker']
         out_file = self.output_dir / f"{ticker}.csv"
@@ -594,17 +569,6 @@ class YFinanceWorker:
             exp = datetime.combine(expiration_date, datetime.min.time(), tzinfo=timezone.utc)
         next_fetch = datetime.now(timezone.utc) + timedelta(hours=3)
         return next_fetch.date() > exp.date()
-
-    def run_cycle(self):
-        trades = self.load_trades()
-        for trade in trades:
-            data = self.process_trades(trade)
-            self.append_to_csv(trade, data)
-            if self.is_expired(trade):
-                logging.info(f"[{self.name}] Trade {trade['trade_id']} expired.")
-            elif self.should_auto_close(trade):
-                logging.info(f"[{self.name}] Auto-closing {trade['trade_id']}.")
-
 
 # ─── FetchTickerProcess ────────────────────────────────────────────────────────
 class FetchTickerProcess(mp.Process):
