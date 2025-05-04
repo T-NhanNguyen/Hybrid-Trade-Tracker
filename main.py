@@ -20,6 +20,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
 from pydantic import ValidationError
 from shared_schemas import TradeInputModel
+from zoneinfo import ZoneInfo
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 
@@ -33,21 +34,21 @@ DEBOUNCE_SECONDS    = float(os.getenv("DEBOUNCE_SECONDS", ".5"))
 ALLOWED_EXTS        = {".json"}
 CACHE_FILENAME      = ".dir_cache.json"
 SCHEDULE_SLOTS    = ["06:30", "09:30", "12:30"]           # 3x per trading day :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
+TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 # ─── Utilities ─────────────────────────────────────────────────────────────────
 
-def current_utc_timestamp() -> str:
-    # use a timezone-aware datetime right off the bat
-    # return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    
-    # return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+def current_timestamp() -> str:
+    """
+    Formatting for prints
+    """
     # new — ISO8601 to the second:
-    return datetime.now(timezone.utc) \
+    return datetime.now(TIMEZONE) \
                  .isoformat(timespec='seconds') \
                  .replace("+00:00","Z")
     
     # human-friendly with UTC label. NOT ISO 8601 STANDARD
-    # return datetime.now(timezone.utc) \
+    # return datetime.now(TIMEZONE) \
     #              .strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def log_event(event: dict):
@@ -58,7 +59,7 @@ def log_event(event: dict):
       - trade_id : optional
       + timestamp (added here)
     """
-    event.setdefault("timestamp", current_utc_timestamp())
+    event.setdefault("timestamp", current_timestamp())
     print(json.dumps(event), flush=True)
 
 def load_json_with_retries(path: Path, retries: int = 3, delay: float = 0.1) -> dict:
@@ -146,7 +147,7 @@ class DirectoryMonitorProcess(mp.Process):
                 "action":    "validation_failed",
                 "trade_id":  tid or "UNKNOWN",
                 "error":     "; ".join(msgs),
-                "timestamp": current_utc_timestamp()
+                "timestamp": current_timestamp()
             })
             return
 
@@ -174,7 +175,7 @@ class DirectoryMonitorProcess(mp.Process):
             "source": self.name,
             "trade_id": tid,
             "validated_trade": json.loads(trade_json),
-            "detected_at": current_utc_timestamp()
+            "detected_at": current_timestamp()
         }
         self.ledger_queue.put(payload)
 
@@ -284,7 +285,7 @@ class DirectoryMonitorProcess(mp.Process):
                     "source": self.name,
                     "trade_id": tid,
                     "validated_trade": json.loads(trade_json),
-                    "detected_at": current_utc_timestamp()
+                    "detected_at": current_timestamp()
                 }
                 self.ledger_queue.put(payload)
                 log_event({
@@ -354,6 +355,102 @@ class YFinanceWorker:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logging.getLogger().setLevel(logging.INFO)
 
+    def _append_option_chain(self, trade: dict, data: dict, chain):
+        """
+        Write out one row per contract (call or put) to
+        {ticker}_options.csv, keeping trade_id, snapshot, ticker,
+        price, sma, rsi, plus all option fields.
+        """
+        ticker    = trade["ticker"]
+        ts        = data["snapshot_timestamp"]
+        price     = data["price"]
+        sma       = data["sma"]
+        rsi       = data["rsi"]
+        out_file  = self.output_dir / f"{ticker}_options.csv"
+        tmp_file  = out_file.with_suffix(".csv.tmp")
+
+        # build a single DataFrame of all options
+        calls = chain.calls.copy()
+        puts  = chain.puts.copy()
+        calls["contract_type"] = "call"
+        puts["contract_type"]  = "put"
+        opts = pd.concat([calls, puts], ignore_index=True)
+
+        # inject your trade‐level columns
+        opts["trade_id"]          = trade["trade_id"]
+        opts["snapshot_timestamp"] = ts
+        opts["ticker"]            = ticker
+        opts["price"]             = price
+        opts["sma"]               = sma
+        opts["rsi"]               = rsi
+
+        # reorder so these come first
+        front = ["trade_id", "snapshot_timestamp", "ticker", "price", "sma", "rsi", "contract_type"]
+        rest  = [c for c in opts.columns if c not in front]
+        opts   = opts[ front + rest ]
+
+        # idempotent upsert: one row per (trade_id, snapshot, contractSymbol)
+        if out_file.exists():
+            old = pd.read_csv(out_file, parse_dates=["snapshot_timestamp"])
+            mask = ~(
+                (old["trade_id"] == trade["trade_id"]) &
+                (old["snapshot_timestamp"] == ts) &
+                (old["contractSymbol"].isin(opts["contractSymbol"]))
+            )
+            df = pd.concat([old[mask], opts], ignore_index=True)
+        else:
+            df = opts
+
+        # atomic write
+        with open(tmp_file, "w", newline="") as f:
+            df.to_csv(f, index=False)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp_file, out_file)
+        log_event({
+            "worker":   self.name,
+            "action":   "options_upserted",
+            "trade_id": trade["trade_id"],
+            "ticker":   ticker,
+            "timestamp": ts
+        })
+
+    def _append_underlying(self, trade: dict, data: dict):
+        """
+        Append summary snapshot (price, sma, rsi) for a trade to the per-ticker CSV.
+        Does NOT include option chain details.
+        """
+        ticker   = trade["ticker"]
+        out_file = self.output_dir / f"{ticker}_underlying.csv"
+        tmp_file = out_file.with_suffix(".csv.tmp")
+
+        # Build the summary row
+        row = {
+            "trade_id": trade["trade_id"],
+            "snapshot_timestamp": data["snapshot_timestamp"],
+            "price": data["price"],
+            "sma": data["sma"],
+            "rsi": data["rsi"]
+        }
+        new_df = pd.DataFrame([row])
+
+        # Load existing summaries and upsert summary row
+        if out_file.exists():
+            old = pd.read_csv(out_file, parse_dates=["snapshot_timestamp"])
+            mask = ~(
+                (old["trade_id"] == row["trade_id"]) &
+                (old["snapshot_timestamp"] == row["snapshot_timestamp"])
+            )
+            df = pd.concat([old[mask], new_df], ignore_index=True)
+        else:
+            df = new_df
+
+        # Atomic write
+        with open(tmp_file, "w", newline="") as f:
+            df.to_csv(f, index=False)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp_file, out_file)
+        logging.info(f"[{self.name}] Upserted summary for {ticker} @ {row['snapshot_timestamp']}")
+
     def process_trades(self, trades: list[dict]):
         """
         Bulk‐download history in chunks and cache option chains to avoid rate limits.
@@ -374,6 +471,7 @@ class YFinanceWorker:
         trades_by_ticker = {}
         for t in trades:
             trades_by_ticker.setdefault(t["ticker"], []).append(t)
+            
 
         # Process each chunk sequentially
         for i in range(0, len(tickers), max_chunk):
@@ -432,7 +530,7 @@ class YFinanceWorker:
 
                 price = float(close.iloc[-1])
                 sma   = float(close.rolling(50).mean().iloc[-1])
-                rsi   = self.calculate_rsi(close)
+                rsi   = self.calculate_rsi(close, self.rsi_period)
 
                 # cached option chain
                 # expiry = trades_by_ticker[ticker][0]["expiration_date"]
@@ -460,7 +558,7 @@ class YFinanceWorker:
                         continue
 
                 data = {
-                    "snapshot_timestamp": current_utc_timestamp(),
+                    "snapshot_timestamp": current_timestamp(),
                     "price":              price,
                     "sma":                sma,
                     "rsi":                rsi,
@@ -470,10 +568,11 @@ class YFinanceWorker:
 
                 # upsert every trade for this ticker
                 for t in trades_by_ticker[ticker]:
-                    self.append_to_csv(t, data)
+                    self._append_underlying(t, data)
+                    self._append_option_chain(t, data, chain)
                     log_event({
                         "worker":   self.name,
-                        "action":   "upserted",
+                        "action":   "underlying_upserted",
                         "trade_id": t["trade_id"],
                         "ticker":   ticker
                     })
@@ -481,21 +580,23 @@ class YFinanceWorker:
             # throttle before next chunk
             time.sleep(chunk_delay)
 
-    def calculate_rsi(self, series: pd.Series, period: int = None) -> float:
-        period = period if period is not None else self.rsi_period
-        # 1) Δ between bars
+    def calculate_rsi(self, series: pd.Series, period: int | None = None) -> float:
+        """
+        original RSI formula introduced by J. Welles Wilder employs a smoothed moving average (SMMA), 
+        which is akin to an exponential moving average (EMA) with a smoothing factor α = 1 / n, where n is the period length. 
+        This method gives more weight to recent price changes and is considered more accurate in reflecting market momentum
+        """
+        # allow caller to omit period
+        if period is None:
+            period = self.rsi_period
         delta = series.diff().dropna()
-        # 2) separate gains & losses
-        gains = delta.clip(lower=0)
-        losses = -delta.clip(upper=0)
-        # 3) rolling average of the last `period` bars
-        avg_gain = gains.rolling(period, min_periods=period).mean().iloc[-1]
-        avg_loss = losses.rolling(period, min_periods=period).mean().iloc[-1]
-        # 4) handle divide-by-zero
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return float(100 - (100 / (1 + rs)))
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        ema_up = up.ewm(alpha=1/period, min_periods=period).mean()
+        ema_down = down.ewm(alpha=1/period, min_periods=period).mean()
+        rs = ema_up / ema_down
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1]
 
     def load_trades(self) -> list[dict]:
         """
@@ -545,29 +646,6 @@ class YFinanceWorker:
         # 4) Return every validated trade unfiltered
         return valid
     
-    def append_to_csv(self, trade: dict, data: dict):
-        ticker = trade['ticker']
-        out_file = self.output_dir / f"{ticker}.csv"
-        tmp_file = out_file.with_suffix('.csv.tmp')
-
-        row = {'trade_id': trade['trade_id'], **data}
-        new_df = pd.DataFrame([row])
-        if out_file.exists():
-            old = pd.read_csv(out_file, parse_dates=['snapshot_timestamp'])
-            mask = ~(
-                (old['trade_id'] == row['trade_id']) &
-                (old['snapshot_timestamp'] == data['snapshot_timestamp'])
-            )
-            df = pd.concat([old[mask], new_df], ignore_index=True)
-        else:
-            df = new_df
-        # Atomic upsert
-        with open(tmp_file, 'w', newline='') as f:
-            df.to_csv(f, index=False)
-            f.flush(); os.fsync(f.fileno())
-        os.replace(tmp_file, out_file)
-        logging.info(f"[{self.name}] Upserted {ticker} @ {data['snapshot_timestamp']} into: \n[{out_file}]")
-
     def is_expired(self, expiration_date) -> bool:
         """
         Determine if a trade is expired based on its expiration date.
@@ -580,7 +658,7 @@ class YFinanceWorker:
             exp = expiration_date.date()
         else:
             exp = expiration_date  # assume it's a date
-        return datetime.now(timezone.utc).date() > exp
+        return datetime.now(TIMEZONE).date() > exp
 
     def should_auto_close(self, expiration_date) -> bool:
         """
@@ -593,8 +671,8 @@ class YFinanceWorker:
             exp = expiration_date
         else:
             # assume date
-            exp = datetime.combine(expiration_date, datetime.min.time(), tzinfo=timezone.utc)
-        next_fetch = datetime.now(timezone.utc) + timedelta(hours=3)
+            exp = datetime.combine(expiration_date, datetime.min.time(), tzinfo=TIMEZONE)
+        next_fetch = datetime.now(TIMEZONE) + timedelta(hours=3)
         return next_fetch.date() > exp.date()
 
 # ─── FetchTickerProcess ────────────────────────────────────────────────────────
@@ -632,14 +710,14 @@ class FetchTickerProcess(mp.Process):
                             "worker":   self.name,
                             "action":   "expired",
                             "trade_id": t["trade_id"],
-                            "timestamp": current_utc_timestamp()
+                            "timestamp": current_timestamp()
                         })
                     elif self.worker.should_auto_close(t["expiration_date"]):
                         log_event({
                             "worker":   self.name,
                             "action":   "auto_close",
                             "trade_id": t["trade_id"],
-                            "timestamp": current_utc_timestamp()
+                            "timestamp": current_timestamp()
                         })
 
                 time.sleep(self.debug_interval)
@@ -649,60 +727,55 @@ class FetchTickerProcess(mp.Process):
             log_event({"worker": self.name, "action": "debug_interval_exited"})
     
     def _run_schedule_mode(self):
+        """
+        At each scheduled UTC slot, load *all* active trades and process them in one batch.
+        """
         log_event({"worker": self.name, "action": "started", "trade_id": None})
         try:
             while True:
-                now_utc = datetime.now(timezone.utc)
+                now_utc = datetime.now(TIMEZONE)
                 hhmm    = now_utc.strftime("%H:%M")
                 today   = now_utc.date()
 
-                # reload and partition trades for today
-                trades  = self.worker.load_trades()
-                tickers = sorted({t["ticker"] for t in trades})
-                group_size = (len(tickers)+len(SCHEDULE_SLOTS)-1)//len(SCHEDULE_SLOTS)
+                # Only trigger once per slot per day
+                if hhmm in SCHEDULE_SLOTS and self._last_run.get(hhmm) != today:
+                    trades = self.worker.load_trades()               # ← all trades, not a slice
+                    log_event({
+                        "worker": self.name,
+                        "action": "scheduled_run",
+                        "slot":   hhmm,
+                        "count":  len(trades)
+                    })
 
-                for idx, slot in enumerate(SCHEDULE_SLOTS):
-                    if hhmm >= slot and self._last_run[slot] != today:
-                        # determine which tickers this slot handles
-                        start = idx * group_size
-                        end   = start + group_size
-                        my_slice = set(tickers[start:end])
-                        slot_trades = [t for t in trades if t["ticker"] in my_slice]
+                    # Bulk-fetch every ticker in one shot
+                    self.worker.process_trades(trades)
 
-                        log_event({
-                            "worker": self.name,
-                            "action": "scheduled_run",
-                            "slot": slot,
-                            "count": len(slot_trades)
-                        })
-                        self.worker.process_trades(slot_trades)
-                        # 1) bulk‐fetch & upsert
-                        self.worker.process_trades(slot_trades)
+                    # Then still do your expiry / auto-close logging
+                    for t in trades:
+                        exp = t["expiration_date"]
+                        if self.worker.is_expired(exp):
+                            log_event({
+                                "worker":   self.name,
+                                "action":   "expired",
+                                "trade_id": t["trade_id"],
+                                "timestamp": current_timestamp()
+                            })
+                        elif self.worker.should_auto_close(exp):
+                            log_event({
+                                "worker":   self.name,
+                                "action":   "auto_close",
+                                "trade_id": t["trade_id"],
+                                "timestamp": current_timestamp()
+                            })
 
-                        # 2) then expiry / auto‐close logging
-                        for t in slot_trades:
-                            exp = t["expiration_date"]
-                            if self.worker.is_expired(exp):
-                                log_event({
-                                    "worker":   self.name,
-                                    "action":   "expired",
-                                    "trade_id": t["trade_id"],
-                                    "timestamp": current_utc_timestamp()
-                                })
-                            elif self.worker.should_auto_close(exp):
-                                log_event({
-                                    "worker":   self.name,
-                                    "action":   "auto_close",
-                                    "trade_id": t["trade_id"],
-                                    "timestamp": current_utc_timestamp()
-                                })
-                        self._last_run[slot] = today
+                    self._last_run[hhmm] = today
 
                 time.sleep(60)
         except KeyboardInterrupt:
             pass
         finally:
             log_event({"worker": self.name, "action": "exited", "trade_id": None})
+
 
 # ─── Ledger Updater Process ────────────────────────────────────────────────────
 
@@ -758,7 +831,7 @@ class LedgerUpdaterProcess(Process):
         log_event({
             "worker":    self.name,
             "action":    "running",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+            "timestamp": datetime.now(TIMEZONE).isoformat().replace("+00:00","Z")
         })
 
         while True:
@@ -768,14 +841,14 @@ class LedgerUpdaterProcess(Process):
                 log_event({
                     "worker":    self.name,
                     "action":    "shutdown_triggered",
-                    "timestamp":  datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+                    "timestamp":  datetime.now(TIMEZONE).isoformat().replace("+00:00","Z")
                 })
                 break
             if msg is None:
                 log_event({
                     "worker":    self.name,
                     "action":    "shutdown_received",
-                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+                    "timestamp": datetime.now(TIMEZONE).isoformat().replace("+00:00","Z")
                 })
                 break
 
@@ -857,7 +930,7 @@ class LedgerUpdaterProcess(Process):
                 "worker": self.name,
                 "action": "delete",
                 "trade_id": trade_id,
-                "deleted_at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
+                "deleted_at": datetime.now(TIMEZONE).isoformat().replace("+00:00","Z")
             })
         else:
             log_event({
@@ -917,7 +990,7 @@ def main():
     ledger_p = LedgerUpdaterProcess(ledger_q, 
                                     ledger_path="trade_ledger.json",
                                     trashed_path="trashed_trades.json")
-    fetch_p = FetchTickerProcess(debug_interval=30)
+    fetch_p = FetchTickerProcess()  # debug_interval=30 for fetching every 30 seconds
     
     for p in (dir_p, ledger_p, fetch_p):
         p.start()
