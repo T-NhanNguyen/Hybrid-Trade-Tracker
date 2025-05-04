@@ -356,115 +356,142 @@ class YFinanceWorker:
 
     def process_trades(self, trades: list[dict]):
         """
-        Bulk-fetch minute bars for given trades, then fetch/cached option chains,
-        upsert to CSV, and log appropriately.
+        Bulk‐download history in chunks and cache option chains to avoid rate limits.
+        3 chunks of 10 tickers
+        each chunk: ~10 history requests (serialized) + option chain calls
+        60-second pause between chunks
         """
+        # Configuration: how many tickers per download, and how long to wait between them
+        max_chunk = int(os.getenv("MAX_TICKERS_PER_CHUNK", "10"))
+        chunk_delay = float(os.getenv("CHUNK_DELAY_SECONDS", "60"))
+
+        # Get unique tickers and split into chunks
         tickers = sorted({t["ticker"] for t in trades})
         if not tickers:
             return
 
-        # 1) Bulk history download
-        try:
-            bulk = yf.download(
-                tickers,
-                period="5d",
-                interval="1m",
-                group_by="ticker",
-                threads=True
-            )
-        except Exception as e:
-            log_event({"worker": self.name, "action": "bulk_history_failed", "error": str(e)})
-            return
+        # Build a map from ticker -> its trades
+        trades_by_ticker = {}
+        for t in trades:
+            trades_by_ticker.setdefault(t["ticker"], []).append(t)
 
-        for trade in trades:
-            ticker = trade["ticker"]
-            trade_id = trade["trade_id"]
-
-            # 2) Extract per-ticker DataFrame, skip if missing
+        # Process each chunk sequentially
+        for i in range(0, len(tickers), max_chunk):
+            chunk = tickers[i:i + max_chunk]
             try:
-                df = bulk if len(tickers) == 1 else bulk[ticker]
-            except (KeyError, ValueError):
+                # threads=False forces serial requests under the hood
+                bulk = yf.download(
+                    tickers=chunk,
+                    period="5d",
+                    interval="1m",
+                    group_by="ticker",
+                    threads=False
+                )
+            except Exception as e:
                 log_event({
                     "worker": self.name,
-                    "action": "history_missing",
-                    "trade_id": trade_id,
-                    "ticker": ticker
+                    "action": "bulk_history_failed",
+                    "tickers": chunk,
+                    "error": str(e)
                 })
+                # wait before next chunk
+                time.sleep(chunk_delay)
                 continue
 
-            # 3) Guard against empty or missing Close series
-            if "Close" not in df or df["Close"].empty:
-                log_event({
-                    "worker": self.name,
-                    "action": "no_close_data",
-                    "trade_id": trade_id,
-                    "ticker": ticker
-                })
-                continue
-
-            close = df["Close"]
-
-            # 4) Ensure enough points for SMA/RSI
-            min_len = max(self.rsi_period, 50)
-            if len(close) < min_len:
-                log_event({
-                    "worker": self.name,
-                    "action": "insufficient_history",
-                    "trade_id": trade_id,
-                    "ticker": ticker,
-                    "rows": len(close)
-                })
-                continue
-
-            # 5) Compute indicators
-            price = float(close.iloc[-1])
-            sma   = float(close.rolling(50).mean().iloc[-1])
-            rsi   = self.calculate_rsi(close)
-
-            # 6) Option chain (with cache, unchanged)
-            exp_dates = yf.Ticker(ticker).options
-            expiry    = trade["expiration_date"]
-            if expiry not in exp_dates and exp_dates:
-                expiry = exp_dates[0]
-            cache_key = (ticker, expiry)
-            chain = self.option_chain_cache.get(cache_key)
-            if chain is None:
+            for ticker in chunk:
+                # extract the right sub-DataFrame
                 try:
-                    chain = yf.Ticker(ticker).option_chain(expiry)
-                    self.option_chain_cache[cache_key] = chain
-                except YFRateLimitError:
+                    df = bulk if len(chunk) == 1 else bulk[ticker]
+                except KeyError:
                     log_event({
                         "worker": self.name,
-                        "action": "rate_limit_chain",
-                        "trade_id": trade_id,
+                        "action": "history_missing",
                         "ticker": ticker
                     })
                     continue
 
-            data = {
-                "snapshot_timestamp": current_utc_timestamp(),
-                "price":              price,
-                "sma":                sma,
-                "rsi":                rsi,
-                "calls":              chain.calls,
-                "puts":               chain.puts,
-            }
+                # if no data, skip
+                if "Close" not in df or df["Close"].empty:
+                    log_event({
+                        "worker": self.name,
+                        "action": "no_close_data",
+                        "ticker": ticker
+                    })
+                    continue
 
-            # 7) Upsert & log
-            self._atomic_upsert(ticker, trade_id, data)
-            log_event({
-                "worker":   self.name,
-                "action":   "upserted",
-                "trade_id": trade_id,
-                "ticker":   ticker
-            })
+                close = df["Close"]
+                min_len = max(self.rsi_period, 50)
+                if len(close) < min_len:
+                    log_event({
+                        "worker": self.name,
+                        "action": "insufficient_history",
+                        "ticker": ticker,
+                        "rows": len(close)
+                    })
+                    continue
 
-    def calculate_rsi(self, series: pd.Series, period: int) -> float:
+                price = float(close.iloc[-1])
+                sma   = float(close.rolling(50).mean().iloc[-1])
+                rsi   = self.calculate_rsi(close)
+
+                # cached option chain
+                # expiry = trades_by_ticker[ticker][0]["expiration_date"]
+                # cache_key = (ticker, expiry)
+                # chain = self.option_chain_cache.get(cache_key)
+
+                raw_exp = t["expiration_date"]
+                if isinstance(raw_exp, (datetime, date)):
+                    expiry = raw_exp.strftime("%Y-%m-%d")
+                else:
+                    expiry = str(raw_exp)
+
+                cache_key = (ticker, expiry)
+                chain = self.option_chain_cache.get(cache_key)
+                if chain is None:
+                    try:
+                        chain = yf.Ticker(ticker).option_chain(expiry)
+                        self.option_chain_cache[cache_key] = chain
+                    except YFRateLimitError:
+                        log_event({
+                            "worker": self.name,
+                            "action": "rate_limit_chain",
+                            "ticker": ticker
+                        })
+                        continue
+
+                data = {
+                    "snapshot_timestamp": current_utc_timestamp(),
+                    "price":              price,
+                    "sma":                sma,
+                    "rsi":                rsi,
+                    "calls":              chain.calls,
+                    "puts":               chain.puts
+                }
+
+                # upsert every trade for this ticker
+                for t in trades_by_ticker[ticker]:
+                    self.append_to_csv(t, data)
+                    log_event({
+                        "worker":   self.name,
+                        "action":   "upserted",
+                        "trade_id": t["trade_id"],
+                        "ticker":   ticker
+                    })
+
+            # throttle before next chunk
+            time.sleep(chunk_delay)
+
+    def calculate_rsi(self, series: pd.Series, period: int = None) -> float:
+        period = period if period is not None else self.rsi_period
+        # 1) Δ between bars
         delta = series.diff().dropna()
+        # 2) separate gains & losses
         gains = delta.clip(lower=0)
         losses = -delta.clip(upper=0)
+        # 3) rolling average of the last `period` bars
         avg_gain = gains.rolling(period, min_periods=period).mean().iloc[-1]
         avg_loss = losses.rolling(period, min_periods=period).mean().iloc[-1]
+        # 4) handle divide-by-zero
         if avg_loss == 0:
             return 100.0
         rs = avg_gain / avg_loss
@@ -539,7 +566,7 @@ class YFinanceWorker:
             df.to_csv(f, index=False)
             f.flush(); os.fsync(f.fileno())
         os.replace(tmp_file, out_file)
-        logging.info(f"[{self.name}] Upserted {ticker} @ {data['snapshot_timestamp']}")
+        logging.info(f"[{self.name}] Upserted {ticker} @ {data['snapshot_timestamp']} into: \n[{out_file}]")
 
     def is_expired(self, expiration_date) -> bool:
         """
