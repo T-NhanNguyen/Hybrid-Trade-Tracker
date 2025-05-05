@@ -8,10 +8,12 @@ import hashlib
 import signal
 import logging
 import multiprocessing as mp
+import shutil
 
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from multiprocessing import Process, Queue
+
 
 import pandas as pd
 import yfinance as yf
@@ -24,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 
-TRADE_INPUT_DIR     = Path(os.getenv("TRADE_INPUT_DIR", "Trade Speculations"))
+TRADE_INPUT_DIR     = Path(os.getenv("TRADE_INPUT_DIR", "trade_speculations"))
 TRADES_CSV          = Path(os.getenv("TRADES_CSV", "trades.csv"))
 TIME_SERIES_DIR     = Path(os.getenv("TIME_SERIES_DIR", "time_series"))
 LEDGER_PATH         = Path(os.getenv("LEDGER_PATH", "trade_ledger.json"))
@@ -35,6 +37,9 @@ ALLOWED_EXTS        = {".json"}
 CACHE_FILENAME      = ".dir_cache.json"
 SCHEDULE_SLOTS    = ["06:30", "09:30", "12:30"]           # 3x per trading day :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
 TIMEZONE = ZoneInfo("America/Los_Angeles")
+
+AUTO_ARCHIVED_DIR        = TRADE_INPUT_DIR / "auto_archived_trades"
+AUTO_ARCHIVED_DIR.mkdir(exist_ok=True, parents=True)
 
 # ─── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -62,14 +67,6 @@ def log_event(event: dict):
     event.setdefault("timestamp", current_timestamp())
     print(json.dumps(event), flush=True)
 
-def load_json_with_retries(path: Path, retries: int = 3, delay: float = 0.1) -> dict:
-    for _ in range(retries):
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, FileNotFoundError):
-            time.sleep(delay)
-    # final attempt, let exception bubble
-    return json.loads(path.read_text(encoding="utf-8"))
 
 # ─── Directory Monitor Process ─────────────────────────────────────────────────
 
@@ -650,6 +647,7 @@ class YFinanceWorker:
         """
         Determine if a trade is expired based on its expiration date.
         Accepts ISO strings, date, or datetime objects.
+        If that next_fetch date is *after* your expiry date, you’re too late. signal auto close.
         """
         # normalize to date
         if isinstance(expiration_date, str):
@@ -706,19 +704,9 @@ class FetchTickerProcess(mp.Process):
                 # if you still want your expiry/auto‐close logging here:
                 for t in trades:
                     if self.worker.is_expired(t["expiration_date"]):
-                        log_event({
-                            "worker":   self.name,
-                            "action":   "expired",
-                            "trade_id": t["trade_id"],
-                            "timestamp": current_timestamp()
-                        })
+                        self._archive_trade(t, "Expired")
                     elif self.worker.should_auto_close(t["expiration_date"]):
-                        log_event({
-                            "worker":   self.name,
-                            "action":   "auto_close",
-                            "trade_id": t["trade_id"],
-                            "timestamp": current_timestamp()
-                        })
+                        self._archive_trade(t, "Auto Closed")
 
                 time.sleep(self.debug_interval)
         except KeyboardInterrupt:
@@ -754,19 +742,9 @@ class FetchTickerProcess(mp.Process):
                     for t in trades:
                         exp = t["expiration_date"]
                         if self.worker.is_expired(exp):
-                            log_event({
-                                "worker":   self.name,
-                                "action":   "expired",
-                                "trade_id": t["trade_id"],
-                                "timestamp": current_timestamp()
-                            })
+                            self._archive_trade(t, "Expired")
                         elif self.worker.should_auto_close(exp):
-                            log_event({
-                                "worker":   self.name,
-                                "action":   "auto_close",
-                                "trade_id": t["trade_id"],
-                                "timestamp": current_timestamp()
-                            })
+                            self._archive_trade(t, "Auto Closed")
 
                     self._last_run[hhmm] = today
 
@@ -776,6 +754,34 @@ class FetchTickerProcess(mp.Process):
         finally:
             log_event({"worker": self.name, "action": "exited", "trade_id": None})
 
+    def _archive_trade(self, trade: dict, new_status: str):
+        """
+        Update the trade JSON’s status and move it into past_trades/.
+        """
+        src = TRADE_INPUT_DIR / f"{trade['trade_id']}.json"
+        dst = AUTO_ARCHIVED_DIR / src.name
+        try:
+            # 1) Update status field
+            data = json.loads(src.read_text(encoding="utf-8"))
+            data['status'] = new_status
+            src.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            # 2) Move file
+            shutil.move(str(src), str(dst))
+
+            log_event({
+                "worker":   self.name,
+                "action":   f"archived_{new_status.lower()}",
+                "trade_id": trade["trade_id"],
+                "filename": dst.name
+            })
+        except Exception as e:
+            log_event({
+                "worker":   self.name,
+                "action":   "archive_failed",
+                "trade_id": trade["trade_id"],
+                "error":    str(e)
+            })
 
 # ─── Ledger Updater Process ────────────────────────────────────────────────────
 
