@@ -1,44 +1,50 @@
 #!/usr/bin/env python3
-import os
-import sys
-import time
-import json
-import tempfile
 import hashlib
-import signal
+import json
 import logging
 import multiprocessing as mp
+import os
+import signal
 import shutil
+import sys
+import tempfile
+import time
 
 from datetime import date, datetime, timezone, timedelta
-from pathlib import Path
 from multiprocessing import Process, Queue
-
+from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
-from yfinance.exceptions import YFRateLimitError
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
 from pydantic import ValidationError
 from shared_schemas import TradeInputModel
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileSystemEventHandler,
+)
+from watchdog.observers import Observer
+from yfinance.exceptions import YFRateLimitError
 from zoneinfo import ZoneInfo
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
+
+ALLOWED_EXTS        = {".json"}
+CACHE_FILENAME      = ".dir_cache.json"
 
 TRADE_INPUT_DIR     = Path(os.getenv("TRADE_INPUT_DIR", "trade_speculations"))
 TRADES_CSV          = Path(os.getenv("TRADES_CSV", "trades.csv"))
 TIME_SERIES_DIR     = Path(os.getenv("TIME_SERIES_DIR", "time_series"))
 LEDGER_PATH         = Path(os.getenv("LEDGER_PATH", "trade_ledger.json"))
 TRASHED_PATH        = Path(os.getenv("TRASHED_PATH", "trashed_trades.json"))
-FETCH_INTERVAL      = int(os.getenv("FETCH_INTERVAL_SECONDS", "300"))  # seconds between fetch cycles
-DEBOUNCE_SECONDS    = float(os.getenv("DEBOUNCE_SECONDS", ".5"))
-ALLOWED_EXTS        = {".json"}
-CACHE_FILENAME      = ".dir_cache.json"
-SCHEDULE_SLOTS    = ["06:30", "09:30", "12:30"]           # 3x per trading day :contentReference[oaicite:8]{index=8}:contentReference[oaicite:9]{index=9}
-TIMEZONE = ZoneInfo("America/Los_Angeles")
 
-AUTO_ARCHIVED_DIR        = TRADE_INPUT_DIR / "auto_archived_trades"
+DEBOUNCE_SECONDS    = float(os.getenv("DEBOUNCE_SECONDS", ".5"))
+SCHEDULE_SLOTS      = ["06:30", "09:30", "12:30"]           # 3x per trading day
+
+TIMEZONE            = ZoneInfo("America/Los_Angeles")
+
+AUTO_ARCHIVED_DIR   = TRADE_INPUT_DIR / "auto_archived_trades"
 AUTO_ARCHIVED_DIR.mkdir(exist_ok=True, parents=True)
 
 # ─── Utilities ─────────────────────────────────────────────────────────────────
@@ -996,7 +1002,7 @@ def main():
     ledger_p = LedgerUpdaterProcess(ledger_q, 
                                     ledger_path="trade_ledger.json",
                                     trashed_path="trashed_trades.json")
-    fetch_p = FetchTickerProcess()  # debug_interval=30 for fetching every 30 seconds
+    fetch_p = FetchTickerProcess(debug_interval=10)  # debug_interval=30 for fetching every 30 seconds
     
     for p in (dir_p, ledger_p, fetch_p):
         p.start()
