@@ -1,0 +1,41 @@
+{
+  "trade_id": "WBD-F8B3XL",
+  "ticker": "WBD",
+  "strategy": "iron_butterfly",
+  "expiration_date": "2025-05-09",
+  "strikes": [
+    {
+      "strike": 8,
+      "type": "put"
+    },
+    {
+      "strike": 8.5,
+      "type": "put"
+    },
+    {
+      "strike": 8.5,
+      "type": "call"
+    },
+    {
+      "strike": 9,
+      "type": "call"
+    }
+  ],
+  "direction": "neutral",
+  "rationale": {
+    "support_zones": [8.0],
+    "resistance_zones": [9.0],
+    // "rsi": null,
+    "gamma_magnets": [8.5],
+    "gamma_cliffs": [8.0, 9.0],
+    "expected_move": 0.57,
+    "iv_rank": 60.00,
+    "iv_percentile": null,
+    "liquidity_notes": "Very tight spreads and high OI at 8.0, 8.5, and 9.0; excellent volume-to-OI ratios across butterfly legs. Implied volatility is high, suggesting rich premium for sale ahead of earnings."
+  },
+  "max_pain_price": 8.5,
+  "news_links": [
+    "https://finance.yahoo.com/news/netflix-warner-bros-stocks-slide-as-trump-threatens-100-tariff-on-foreign-made-films-160154922.html"
+  ],
+  "timestamp": "2025-05-05T20:13:22.000000"
+}

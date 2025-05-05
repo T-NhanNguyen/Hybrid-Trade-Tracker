@@ -1002,7 +1002,7 @@ def main():
     ledger_p = LedgerUpdaterProcess(ledger_q, 
                                     ledger_path="trade_ledger.json",
                                     trashed_path="trashed_trades.json")
-    fetch_p = FetchTickerProcess(debug_interval=10)  # debug_interval=30 for fetching every 30 seconds
+    fetch_p = FetchTickerProcess()  # debug_interval=30 for fetching every 30 seconds
     
     for p in (dir_p, ledger_p, fetch_p):
         p.start()

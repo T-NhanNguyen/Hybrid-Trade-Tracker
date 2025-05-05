@@ -1,0 +1,27 @@
+{
+  "trade_id": "PLTR-G8T5X2",
+  "ticker": "PLTR",
+  "strategy": "iron_condor",
+  "expiration_date": "2025-05-09",
+  "strikes": [
+    { "strike": 115, "type": "put" },
+    { "strike": 112, "type": "put" },
+    { "strike": 125, "type": "call" },
+    { "strike": 128, "type": "call" }
+  ],
+  "direction": "neutral",
+  "rationale": {
+    "support_zones": [102.91, 80.69],
+    "resistance_zones": [125, 130],
+    "rsi": 71.09,
+    "gamma_magnets": [125],
+    "gamma_cliffs": [100],
+    "expected_move": 17.90,
+    "iv_rank": 68.74,
+    "iv_percentile": null,
+    "liquidity_notes": "High open interest at 125 calls (17.3K) and 115 puts (1.2K); moderate liquidity at long strikes 112 and 128."
+  },
+  "max_pain_price": 125.0,
+  "news_links": [],
+  "timestamp": "2025-05-02T13:20:00.000000"
+}

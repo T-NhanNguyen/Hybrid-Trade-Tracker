@@ -31,7 +31,7 @@ class TradeInputModel(BaseModel):
         description="Underlying ticker symbol (uppercase)",
         min_length=1
     )
-    strategy: Literal['debit_spread', 'credit_spread', 'iron_condor', 'butterfly'] = Field(
+    strategy: Literal['debit_spread', 'credit_spread', 'iron_condor', 'butterfly', "bear_call_spread", "iron_butterfly"] = Field(
         ..., 
         description="Trading strategy type"
     )

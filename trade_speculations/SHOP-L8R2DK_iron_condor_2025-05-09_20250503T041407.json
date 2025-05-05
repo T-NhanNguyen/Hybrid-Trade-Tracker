@@ -1,0 +1,49 @@
+{
+  "trade_id": "SHOP-L8R2DK",
+  "ticker": "SHOP",
+  "strategy": "iron_condor",
+  "expiration_date": "2025-05-09",
+  "strikes": [
+    {
+      "strike": 97,
+      "type": "put"
+    },
+    {
+      "strike": 100,
+      "type": "put"
+    },
+    {
+      "strike": 100,
+      "type": "call"
+    },
+    {
+      "strike": 103,
+      "type": "call"
+    }
+  ],
+  "direction": "neutral",
+  "rationale": {
+    "support_zones": [
+      95,
+      97
+    ],
+    "resistance_zones": [
+      103,
+      107.69
+    ],
+    "rsi": 57.5,
+    "gamma_magnets": [
+      97
+    ],
+    "gamma_cliffs": [
+      98
+    ],
+    "expected_move": 6.2,
+    "iv_rank": 48.67,
+    "iv_percentile": 85,
+    "liquidity_notes": "Final fill confirmed with clean execution at 93p and 103c wings. 95/105 strikes previously had no fills. Volume and OI at 97/100/103 were strong with tight spreads."
+  },
+  "max_pain_price": 100,
+  "news_links": [],
+  "timestamp": "2025-05-03T04:14:07.159858"
+}

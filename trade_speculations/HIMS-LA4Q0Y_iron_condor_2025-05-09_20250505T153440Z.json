@@ -1,0 +1,51 @@
+{
+  "trade_id": "HIMS-LA4Q0Y",
+  "ticker": "HIMS",
+  "strategy": "iron_condor",
+  "expiration_date": "2025-05-09",
+  "strikes": [
+    {
+      "strike": 40,
+      "type": "put"
+    },
+    {
+      "strike": 38,
+      "type": "put"
+    },
+    {
+      "strike": 42,
+      "type": "call"
+    },
+    {
+      "strike": 44,
+      "type": "call"
+    }
+  ],
+  "direction": "neutral",
+  "rationale": {
+    "support_zones": [
+      38.84,
+      40.04
+    ],
+    "resistance_zones": [
+      44.0,
+      46.0
+    ],
+    "rsi": 54.05,
+    "gamma_magnets": [
+      41,
+      40
+    ],
+    "gamma_cliffs": [
+      35.33,
+      31.41
+    ],
+    "expected_move": 7.15,
+    "iv_rank": 79.26,
+    "iv_percentile": 95,
+    "liquidity_notes": "Sell put wing at 40P (3.8k OI) and call wing at 42C (1.8k OI); buy protective wings at 38P (469 OI) and 44C (1.2k OI). Widths are 2 points with tight spreads for easy management."
+  },
+  "max_pain_price": 36.0,
+  "news_links": [],
+  "timestamp": "2025-05-05T15:34:40.261541Z"
+}
