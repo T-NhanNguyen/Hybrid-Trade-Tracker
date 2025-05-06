@@ -1,6 +1,7 @@
 {
   "trade_id": "WBD-F8B3XL",
   "ticker": "WBD",
+  "status": "Active",
   "strategy": "iron_butterfly",
   "expiration_date": "2025-05-09",
   "strikes": [

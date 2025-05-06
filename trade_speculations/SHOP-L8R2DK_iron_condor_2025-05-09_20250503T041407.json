@@ -1,6 +1,7 @@
 {
   "trade_id": "SHOP-L8R2DK",
   "ticker": "SHOP",
+  "status": "Active",
   "strategy": "iron_condor",
   "expiration_date": "2025-05-09",
   "strikes": [

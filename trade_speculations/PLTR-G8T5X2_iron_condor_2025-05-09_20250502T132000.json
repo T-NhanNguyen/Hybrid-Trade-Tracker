@@ -1,6 +1,7 @@
 {
   "trade_id": "PLTR-G8T5X2",
   "ticker": "PLTR",
+  "status": "Speculation",
   "strategy": "iron_condor",
   "expiration_date": "2025-05-09",
   "strikes": [

@@ -1,6 +1,7 @@
 {
   "trade_id": "SKX-KU2NXH",
   "ticker": "SKX",
+  "status": "Speculation",
   "strategy": "bear_call_spread",
   "expiration_date": "2025-05-16",
   "strikes": [

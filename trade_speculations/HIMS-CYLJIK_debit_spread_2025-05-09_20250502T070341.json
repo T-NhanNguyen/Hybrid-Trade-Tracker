@@ -1,6 +1,7 @@
 {
   "trade_id": "HIMS-CYLJIK",
   "ticker": "HIMS",
+  "status": "Speculation",
   "strategy": "debit_spread",
   "expiration_date": "2025-05-09",
   "strikes": [

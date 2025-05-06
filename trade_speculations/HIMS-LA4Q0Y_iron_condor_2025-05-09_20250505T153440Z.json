@@ -1,6 +1,7 @@
 {
   "trade_id": "HIMS-LA4Q0Y",
   "ticker": "HIMS",
+  "status": "Closed",
   "strategy": "iron_condor",
   "expiration_date": "2025-05-09",
   "strikes": [
