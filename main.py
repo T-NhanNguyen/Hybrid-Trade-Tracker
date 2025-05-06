@@ -895,6 +895,9 @@ class LedgerUpdaterProcess(Process):
         incoming_norm = {k: validated_trade[k] for k in validated_trade
                          if k not in ("created_at", "updated_at")}
 
+        incoming_norm.setdefault("entry_price", None)
+        incoming_norm.setdefault("exit_price",  None)
+        
         if trade_id not in ledger:
             # New record
             record = incoming_norm.copy()

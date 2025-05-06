@@ -89,6 +89,16 @@ class TradeInputModel(BaseModel):
     rationale: RationaleModel = Field(..., description="Quantitative and qualitative rationale for the trade")
     max_pain_price: float = Field(..., ge=0, description="Max pain price level for the underlying")
     news_links: List[HttpUrl] = Field(..., description="Related news or research URLs")
+    entry_price: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Optional entry price for the trade"
+    )
+    exit_price: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Optional exit price for the trade"
+    )
     timestamp: datetime = Field(
         ..., 
         description="ISO-8601 timestamp when the trade spec was generated"
