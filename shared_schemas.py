@@ -31,16 +31,7 @@ class TradeInputModel(BaseModel):
         description="Underlying ticker symbol (uppercase)",
         min_length=1
     )
-    strategy: Literal['debit_spread', 'credit_spread', 'iron_condor', 'butterfly', "bear_call_spread", "iron_butterfly"] = Field(
-        ..., 
-        description="Trading strategy type"
-    )
-    expiration_date: date = Field(
-        ..., 
-        description="Options expiration date (YYYY-MM-DD)"
-    )
-    strikes: List[StrikeModel] = Field(..., description="List of strikes involved in the trade")
-    direction: Literal[
+    strategy: Literal[
     # Basic
     "long_call",
     "long_put",
@@ -77,6 +68,15 @@ class TradeInputModel(BaseModel):
     "custom_6_legs",
     "custom_8_legs",
     ]= Field(
+        ..., 
+        description="Trading strategy type"
+    )
+    expiration_date: date = Field(
+        ..., 
+        description="Options expiration date (YYYY-MM-DD)"
+    )
+    strikes: List[StrikeModel] = Field(..., description="List of strikes involved in the trade")
+    direction: Literal['bullish', 'neutral', 'bearish'] = Field(
         ..., 
         description="Directional bias of the trade"
     )
