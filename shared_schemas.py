@@ -40,7 +40,43 @@ class TradeInputModel(BaseModel):
         description="Options expiration date (YYYY-MM-DD)"
     )
     strikes: List[StrikeModel] = Field(..., description="List of strikes involved in the trade")
-    direction: Literal['bullish', 'neutral', 'bearish'] = Field(
+    direction: Literal[
+    # Basic
+    "long_call",
+    "long_put",
+    "covered_call",
+    "cash_secured_put",
+    "naked_call",
+    "naked_put",
+
+    # Spreads
+    "credit_spread",
+    "call_spread",
+    "put_spread",
+    "poor_mans_covered_call",
+    "calendar_spread",
+    "ratio_back_spread",
+
+    # Advanced
+    "iron_condor",
+    "butterfly",
+    "collar",
+    "diagonal_spread",
+    "double_diagonal",
+    "straddle",
+    "strangle",
+    "covered_strangle",
+    "synthetic_put",
+    "reverse_conversion",
+
+    # Custom (by leg-count)
+    "custom_2_legs",
+    "custom_3_legs",
+    "custom_4_legs",
+    "custom_5_legs",
+    "custom_6_legs",
+    "custom_8_legs",
+    ]= Field(
         ..., 
         description="Directional bias of the trade"
     )

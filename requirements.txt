@@ -2,3 +2,6 @@ pandas
 yfinance
 watchdog
 pydantic
+python-dotenv
+numpy
+matplotlib
