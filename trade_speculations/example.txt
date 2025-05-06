@@ -1,30 +1,49 @@
 file name: PLTR-G8T5X2_iron_condor_2025-05-09_20250502T132000.json
-`[TRADE_ID_ALL_CAPS]_[STRATEGY_NO_SPACES]_[expiration_date]_[YYYYMMDDThhmmss].json`
+Filename format: `[TRADE_ID_ALL_CAPS]_[STRATEGY_NO_SPACES]_[expiration_date]_[YYYYMMDDThhmmss].json`
 
+Content:
 {
-  "trade_id": "PLTR-G8T5X2",
-  "ticker": "PLTR",
-  "strategy": "iron_condor",
+  "trade_id": "HIMS-CYLJIK",
+  "ticker": "HIMS",
+  "status": "Speculation",
+  "strategy": "debit_spread",
   "expiration_date": "2025-05-09",
   "strikes": [
-    { "strike": 115, "type": "put" },
-    { "strike": 112, "type": "put" },
-    { "strike": 125, "type": "call" },
-    { "strike": 128, "type": "call" }
+    {
+      "strike": 36,
+      "type": "call"
+    },
+    {
+      "strike": 39,
+      "type": "call"
+    }
   ],
-  "direction": "neutral",
+  "direction": "bullish",
   "rationale": {
-    "support_zones": [102.91, 80.69],
-    "resistance_zones": [125, 130],
-    "rsi": 71.09,
-    "gamma_magnets": [125],
-    "gamma_cliffs": [100],
-    "expected_move": 17.90,
-    "iv_rank": 68.74,
+    "support_zones": [
+      31.4,
+      34.6
+    ],
+    "resistance_zones": [
+      38,
+      40,
+      44
+    ],
+    "rsi": 60.89,
+    "gamma_magnets": [
+      35,
+      38
+    ],
+    "gamma_cliffs": [
+      31,
+      27
+    ],
+    "expected_move": 7.25,
+    "iv_rank": 71.68,
     "iv_percentile": null,
-    "liquidity_notes": "High open interest at 125 calls (17.3K) and 115 puts (1.2K); moderate liquidity at long strikes 112 and 128."
+    "liquidity_notes": "Very high OI and volume at 36\u201340C; $38C has 3.9k OI and 4.9k volume. $36C and $37C both show robust volume as well. IV is high, but not at extremes\u2014supports debit structures."
   },
-  "max_pain_price": 125.0,
+  "max_pain_price": 35.7,
   "news_links": [],
-  "timestamp": "2025-05-02T13:20:00.000000"
+  "timestamp": "2025-05-02T07:03:41.237927"
 }

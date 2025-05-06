@@ -228,6 +228,7 @@ def plot_net_gex(calls_gex: pd.DataFrame,
                  title: str,
                  symbol: str,
                  expiry: str,
+                 current_price: float,
                  chart_dir: str = CHART_DIR):
     """
     Bar chart of net GEX per strike (calls minus puts), centered on zero.
@@ -259,6 +260,14 @@ def plot_net_gex(calls_gex: pd.DataFrame,
     ax.set_title(title)
     ax.grid(True, linestyle='--', alpha=0.3)
 
+    # vertical line at current underlying price
+    x_pos = np.interp(current_price, strikes, x)
+    ax.axvline(x_pos, color='blue', linestyle='--', linewidth=1.5,
+               label=f'Underlying: ${current_price:.2f}')
+    
+    y_limit = max(abs(net_vals).max(), 1) * 1.1
+    ax.set_ylim(-y_limit, y_limit)
+    
     plt.tight_layout()
     fname = f"{_slugify(title)}_net_gex.png"
     filepath = os.path.join(chart_dir, fname)
@@ -382,10 +391,11 @@ def main():
     plot_net_gex(
         calls_gex,
         puts_gex,
-        f"{symbol} {expiry} Net Gamma Exposure",
+        f"{symbol} {expiry} Net Gamma Exposure",  # title
         symbol,
         expiry,
-        CHART_DIR
+        current_price=price,                      # <-- must be the float price
+        chart_dir=CHART_DIR
     )
     
     plot_gex_oi_chart(calls_gex,   f"{symbol} {expiry} Calls: GEX vs Open Interest")
