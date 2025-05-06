@@ -263,11 +263,21 @@ class DirectoryMonitorProcess(mp.Process):
 
             try:
                 validated = TradeInputModel(**raw)
-            except ValidationError:
+            except ValidationError as ve:
+                # Build a concise human‐readable summary
+                error_msgs = []
+                for err in ve.errors():
+                    # err["loc"] is a tuple like ("rationale","iv_rank")
+                    loc = ".".join(str(x) for x in err["loc"])
+                    error_msgs.append(f"{loc}: {err['msg']}")
+
                 log_event({
-                    "worker": self.name,
-                    "action": "validation_error",
-                    "trade_id": tid
+                    "worker":    self.name,
+                    "action":    "validation_failed",
+                    "trade_id":  tid or "UNKNOWN",
+                    "error":     "; ".join(error_msgs),
+                    # you can also include the full error objects if you like:
+                    "details":   ve.errors()
                 })
                 continue
 

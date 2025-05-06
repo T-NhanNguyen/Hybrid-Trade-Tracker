@@ -31,6 +31,11 @@ class TradeInputModel(BaseModel):
         description="Underlying ticker symbol (uppercase)",
         min_length=1
     )
+    status: str = Field(
+        ..., 
+        description="Distinction between a speculation and actual trade",
+        min_length=1
+    )
     strategy: Literal[
     # Basic
     "long_call",
@@ -41,6 +46,7 @@ class TradeInputModel(BaseModel):
     "naked_put",
 
     # Spreads
+    "debit_spread",
     "credit_spread",
     "call_spread",
     "put_spread",
