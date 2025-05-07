@@ -30,6 +30,11 @@ from zoneinfo import ZoneInfo
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 
+# hash the Pydantic JSON‐schema so it changes whenever your model does
+_SCHEMA_HASH = hashlib.sha256(
+    json.dumps(TradeInputModel.model_json_schema(), sort_keys=True).encode('utf-8')
+).hexdigest()
+
 ALLOWED_EXTS        = {".json"}
 CACHE_FILENAME      = ".dir_cache.json"
 
@@ -205,11 +210,23 @@ class DirectoryMonitorProcess(mp.Process):
     def _load_persistent_cache(self):
         try:
             with open(self.cache_path, "r", encoding="utf-8") as f:
-                saved = json.load(f)
+                saved = json.load(open(self.cache_path, "r", encoding="utf-8"))
+                if saved.get("schema_hash") != _SCHEMA_HASH:
+                    
+                    # schema changed since last run → drop old cache
+                    log_event({
+                        "worker": self.name,
+                        "action": "cache_schema_mismatch",
+                        "old_schema": saved.get("schema_hash"),
+                        "new_schema": _SCHEMA_HASH
+                    })
+                    return
+            
             # rebuild in-memory maps
-            self._cache = saved
-            self._path_map = {info["path"]: tid for tid, info in saved.items()}
+            self._cache = saved["entries"]
+            self._path_map = {info["path"]: tid for tid, info in saved["entries"].items()}
         except FileNotFoundError:
+            
             # no cache yet → start fresh
             return
         except Exception as e:
@@ -224,7 +241,10 @@ class DirectoryMonitorProcess(mp.Process):
         try:
             tmp = self.cache_path.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._cache, f)
+                json.dump({
+                    "schema_hash": _SCHEMA_HASH,
+                    "entries":      self._cache
+                }, f)
             os.replace(tmp, self.cache_path)
         except Exception as e:
             log_event({

@@ -53,6 +53,10 @@ class TradeInputModel(BaseModel):
     "poor_mans_covered_call",
     "calendar_spread",
     "ratio_back_spread",
+    "bull_call_spread",
+    "bear_call_spread",
+    "bear_put_spread",
+    "bull_put_spread",
 
     # Advanced
     "iron_condor",

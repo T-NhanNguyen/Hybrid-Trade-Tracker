@@ -1,0 +1,46 @@
+{
+  "trade_id": "JD-4F8T1Z",
+  "status": "Speculation",
+  "ticker": "JD",
+  "strategy": "bull_call_spread",
+  "expiration_date": "2025-05-16",
+  "strikes": [
+    {
+      "buy/write": "buy",
+      "strike": 35.0,
+      "type": "call"
+    },
+    {
+      "buy/write": "write",
+      "strike": 38.0,
+      "type": "call"
+    }
+  ],
+  "direction": "bullish",
+  "rationale": {
+    "support_zones": [
+      32.54
+    ],
+    "resistance_zones": [
+      35.06,
+      38.02,
+      41.28
+    ],
+    "rsi": 42.55,
+    "gamma_magnets": [
+      34.0,
+      38.0
+    ],
+    "gamma_cliffs": [
+      33.5,
+      38.5
+    ],
+    "expected_move": 3.37,
+    "iv_rank": 77.25,
+    "iv_percentile": null,
+    "liquidity_notes": "Elevated open interest at 34C (~10.6k) and 38P (~36k); strong volume supports tight spreads."
+  },
+  "max_pain_price": 38.0,
+  "news_links": [],
+  "timestamp": "2025-05-07T00:00:00.000000"
+}
