@@ -1,0 +1,49 @@
+{
+  "trade_id": "QBTS-ZK7J4L",
+  "ticker": "QBTS",
+  "status": "Speculation",
+  "strategy": "bull_call_spread",
+  "expiration_date": "2025-05-16",
+  "strikes": [
+    {
+      "buy/write": "buy",
+      "strike": 10.0,
+      "type": "call"
+    },
+    {
+      "buy/write": "write",
+      "strike": 12.0,
+      "type": "call"
+    }
+  ],
+  "direction": "bullish",
+  "rationale": {
+    "support_zones": [
+      7.2,
+      9.0
+    ],
+    "resistance_zones": [
+      10.19
+    ],
+    "rsi": 88.21,
+    "gamma_magnets": [
+      10.0,
+      11.0,
+      12.0,
+      13.0
+    ],
+    "gamma_cliffs": [
+      8.0,
+      9.0
+    ],
+    "expected_move": 1.2,
+    "iv_rank": 0.64,
+    "iv_percentile": 13.79,
+    "liquidity_notes": "High call open interest at 10C (3812 OI, 42143 vol) and 12C (6236 OI, 1230 vol); significant put open interest at 8P (5965 OI, 2869 vol) and 9P (1802 OI, 1740 vol) provides support. Wait for a pullback into 10.50\u201311.00, confirmation of 10.00 as support, and RSI cooling below 75 (ideally under 70) before entry."
+  },
+  "max_pain_price": 10.0,
+  "news_links": [
+    "https://finance.yahoo.com/news/d-wave-reports-first-quarter-110000209.html"
+  ],
+  "timestamp": "2025-05-08T18:03:35.771809"
+}

@@ -1,0 +1,55 @@
+{
+  "trade_id": "BABA-VEXY2M",
+  "ticker": "BABA",
+  "status": "Speculation",
+  "strategy": "butterfly",
+  "expiration_date": "2025-05-09",
+  "strikes": [
+    {
+      "buy/write": "buy",
+      "strike": 120,
+      "type": "put"
+    },
+    {
+      "buy/write": "write",
+      "strike": 125,
+      "type": "put"
+    },
+    {
+      "buy/write": "write",
+      "strike": 125,
+      "type": "call"
+    },
+    {
+      "buy/write": "buy",
+      "strike": 130,
+      "type": "call"
+    }
+  ],
+  "direction": "neutral",
+  "rationale": {
+    "support_zones": [
+      120,
+      118
+    ],
+    "resistance_zones": [
+      128,
+      130
+    ],
+    "rsi": 50.92,
+    "gamma_magnets": [
+      125
+    ],
+    "gamma_cliffs": [
+      122,
+      128
+    ],
+    "expected_move": 6.25,
+    "iv_rank": 51.85,
+    "iv_percentile": null,
+    "liquidity_notes": "Strong OI and tight spreads at 125 strike (both calls and puts); butterfly structure fully supported with minimal slippage risk.",
+  },
+  "max_pain_price": 120,
+  "news_links": [],
+  "timestamp": "2025-05-07T09:02:21.044Z"
+}

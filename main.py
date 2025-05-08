@@ -260,6 +260,10 @@ class DirectoryMonitorProcess(mp.Process):
         compare hashes to cached values, and enqueue any new/changed.
         """
         for p in self.input_dir.iterdir():
+            
+            # don’t treat our own cache (or any hidden file) as a trade spec
+            if p.name == CACHE_FILENAME or p.name.startswith('.'):
+                continue
             path_str = str(p)
             if p.suffix.lower() not in ALLOWED_EXTS:
                 continue
