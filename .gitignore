@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 time_series/
+trade_speculations/*
 !trade_speculations/example.txt
 trade_ledger.json
 trashed_trades.json
