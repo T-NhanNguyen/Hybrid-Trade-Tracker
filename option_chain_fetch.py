@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use('Agg')    # ← select non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
+from datetime import date
 import re
 import os
 import json
@@ -20,6 +21,20 @@ CHART_DIR           = "charts"
 
 # create the folder if needed
 os.makedirs(CHART_DIR, exist_ok=True)
+
+def get_output_path(filename: str,
+                    symbol: str,
+                    expiry: str,
+                    base_dir: str = CHART_DIR) -> str:
+    """
+    Build and ensure the directory: base_dir/expiry/symbol/
+    Return the full filepath to base_dir/expiry/symbol/filename
+    """
+    today = datetime.date.today()
+    today_str = today.strftime('%Y-%m-%d')
+    out_dir = os.path.join(base_dir, expiry, symbol, today_str)
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, filename)
 
 def get_chain_dfs(symbol: str, expiry: str):
     """
@@ -63,29 +78,16 @@ def get_chain_dfs(symbol: str, expiry: str):
 
     return calls, puts
 
-def compute_gex(df: pd.DataFrame, S: float, T: float) -> pd.DataFrame:
+def center_strikes(df: pd.DataFrame, current_price: float, radius: int):
     """
-    Given a DataFrame with 'Strike', 'IV', and 'Open Int',
-    compute Black-Scholes gamma and Gamma Exposure (GEX).
+    Round price to nearest $0.1, find nearest strike row,
+    and return ±radius strikes around it.
     """
-    K     = df['Strike'].to_numpy()
-    sigma = df['IV'].to_numpy()
-    r     = 0.0
-    t     = T
-
-    # Black-Scholes d1
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
-    pdf = np.exp(-0.5 * d1**2) / np.sqrt(2 * np.pi)
-
-    # Gamma per contract
-    gamma = pdf / (S * sigma * np.sqrt(t))
-
-    # Total Gamma Exposure
-    gex = gamma * df['Open Int'].to_numpy() * CONTRACT_SIZE
-
-    out = df.copy()
-    out['GEX'] = gex
-    return out
+    center = round(current_price * 10) / 10.0
+    idx    = (df['Strike'] - center).abs().idxmin()
+    start  = max(idx - radius, 0)
+    end    = min(idx + radius, len(df) - 1)
+    return df.iloc[start:end+1].reset_index(drop=True), center
 
 def calculate_net_gex(
     strikes, ivs, ois, S0, r, q, T
@@ -113,35 +115,130 @@ def calculate_net_gex(
     # 4) Separate calls/puts by sign in ois array (positive=call, negative=put)
     return gex.sum()
 
+def compute_gex(df: pd.DataFrame, S: float, T: float) -> pd.DataFrame:
+    """
+    Given a DataFrame with 'Strike', 'IV', and 'Open Int',
+    compute Black-Scholes gamma and Gamma Exposure (GEX).
+    """
+    K     = df['Strike'].to_numpy()
+    sigma = df['IV'].to_numpy()
+    r     = 0.0
+    t     = T
 
-def center_strikes(df: pd.DataFrame, current_price: float, radius: int):
-    """
-    Round price to nearest $0.1, find nearest strike row,
-    and return ±radius strikes around it.
-    """
-    center = round(current_price * 10) / 10.0
-    idx    = (df['Strike'] - center).abs().idxmin()
-    start  = max(idx - radius, 0)
-    end    = min(idx + radius, len(df) - 1)
-    return df.iloc[start:end+1].reset_index(drop=True), center
+    # Black-Scholes d1
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+    pdf = np.exp(-0.5 * d1**2) / np.sqrt(2 * np.pi)
+
+    # Gamma per contract
+    gamma = pdf / (S * sigma * np.sqrt(t))
+
+    # Total Gamma Exposure
+    gex = gamma * df['Open Int'].to_numpy() * CONTRACT_SIZE
+
+    out = df.copy()
+    out['GEX'] = gex
+    return out
 
 def sort_by_open_interest(df: pd.DataFrame, descending: bool = DEFAULT_SORT_DESC):
     """Sort by Open Interest."""
     return df.sort_values(by='Open Int', ascending=not descending)
 
-def sort_by_volume(df: pd.DataFrame, descending: bool = DEFAULT_SORT_DESC):
-    """Sort by Volume."""
-    return df.sort_values(by='Volume', ascending=not descending)
-
 def sort_by_strike(df: pd.DataFrame, ascending: bool = True):
     """Sort by Strike price."""
     return df.sort_values(by='Strike', ascending=ascending)
+
+def sort_by_volume(df: pd.DataFrame, descending: bool = DEFAULT_SORT_DESC):
+    """Sort by Volume."""
+    return df.sort_values(by='Volume', ascending=not descending)
 
 def _slugify(text: str) -> str:
     """Make a filesystem‐safe slug from the title."""
     return re.sub(r'[^A-Za-z0-9]+', '_', text).strip('_')
 
-def plot_heatmap(metrics_df: pd.DataFrame, title: str):
+def export_for_ai(df: pd.DataFrame,
+                  symbol: str,
+                  expiry: str,
+                  filename: str):
+    """
+    Export key fields for AI consumption in JSON, containing:
+      • gex_summary: strike, open_interest, gex
+      • chain_by_strike: full chain sorted by strike with GEX included
+    Writes into CHART_DIR.
+    """
+    # 1) Sort by strike
+    chain_sorted = df.sort_values(by='Strike').reset_index(drop=True)
+
+    # 2) Build GEX summary list
+    gex_summary = chain_sorted[['Strike', 'Open Int', 'GEX']].rename(columns={
+        'Strike': 'strike',
+        'Open Int': 'open_interest',
+        'GEX': 'gex'
+    }).to_dict(orient='records')
+
+    # 3) Build full chain list
+    chain_by_strike = chain_sorted.rename(columns={
+        'Strike': 'strike',
+        'Last': 'last_price',
+        'Change': 'change',
+        '%Chg': 'percent_change',
+        'Open Int': 'open_interest',
+        'IV': 'implied_volatility',
+        'Volume': 'volume',
+        'GEX': 'gex'
+    }).to_dict(orient='records')
+
+    export_obj = {
+        'gex_summary': gex_summary,
+        'chain_by_strike': chain_by_strike
+    }
+
+    # 4) Write JSON into CHART_DIR
+    filepath = get_output_path(filename, symbol, expiry)
+    with open(filepath, 'w') as f:
+        json.dump(export_obj, f, indent=2)
+
+    print(f"Exported {len(chain_by_strike)} strikes with GEX to {filepath}")
+
+def plot_gex_oi_chart(gex_df: pd.DataFrame, 
+                      title: str,
+                      current_price: float,
+                      symbol: str,
+                      expiry: str):
+    """
+    Render a grouped bar chart for GEX vs Open Interest across strikes.
+    """
+    strikes = gex_df['Strike'].to_numpy()
+    gex_vals = gex_df['GEX'].to_numpy()
+    oi_vals  = gex_df['Open Int'].to_numpy()
+    x = np.arange(len(strikes))
+    width = 0.35
+
+    fig, ax = plt.subplots(
+        figsize=(len(strikes) * 0.4 + 3, 4),
+        dpi=100
+    )
+
+    ax.bar(x - width/2, gex_vals, width, label='GEX')
+    ax.bar(x + width/2, oi_vals, width, label='Open Int')
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(strikes, rotation=90)
+    ax.set_xlabel('Strike')
+    ax.set_ylabel('Value')
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    filepath = get_output_path(f"{_slugify(title)}_barchart.png", symbol, expiry)
+    plt.savefig(filepath)
+    plt.close()
+    print(f"Chart saved to {filepath}")
+
+def plot_heatmap(metrics_df: pd.DataFrame,                 
+                 title: str,
+                 symbol: str,
+                 expiry: str):
     """
     Render a heatmap with a purple→red scale and black/yellow font contrast.
     • index = ['GEX','Open Int']
@@ -184,44 +281,10 @@ def plot_heatmap(metrics_df: pd.DataFrame, title: str):
                     color=color, fontsize=8)
 
     plt.tight_layout()
-    fn = f"{_slugify(title)}_heatmap.png"
-    filepath = os.path.join(CHART_DIR, fn)
+    filepath = get_output_path(f"{_slugify(title)}_heatmap.png", symbol, expiry)
     plt.savefig(filepath)
     plt.close()
-    print(f"Heatmap saved to {fn}")
-
-def plot_gex_oi_chart(gex_df: pd.DataFrame, title: str):
-    """
-    Render a grouped bar chart for GEX vs Open Interest across strikes.
-    """
-    strikes = gex_df['Strike'].to_numpy()
-    gex_vals = gex_df['GEX'].to_numpy()
-    oi_vals  = gex_df['Open Int'].to_numpy()
-    x = np.arange(len(strikes))
-    width = 0.35
-
-    fig, ax = plt.subplots(
-        figsize=(len(strikes) * 0.4 + 3, 4),
-        dpi=100
-    )
-
-    ax.bar(x - width/2, gex_vals, width, label='GEX')
-    ax.bar(x + width/2, oi_vals, width, label='Open Int')
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(strikes, rotation=90)
-    ax.set_xlabel('Strike')
-    ax.set_ylabel('Value')
-    ax.set_title(title)
-    ax.legend()
-    ax.grid(True, linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    fn = f"{_slugify(title)}_barchart.png"
-    filepath = os.path.join(CHART_DIR, fn)
-    plt.savefig(filepath)
-    plt.close()
-    print(f"Chart saved to {fn}")
+    print(f"Heatmap saved to {filepath}")
 
 def plot_net_gex(calls_gex: pd.DataFrame,
                  puts_gex: pd.DataFrame,
@@ -269,53 +332,10 @@ def plot_net_gex(calls_gex: pd.DataFrame,
     ax.set_ylim(-y_limit, y_limit)
     
     plt.tight_layout()
-    fname = f"{_slugify(title)}_net_gex.png"
-    filepath = os.path.join(chart_dir, fname)
+    filepath = get_output_path(f"{_slugify(title)}_net_gex.png", symbol, expiry)
     plt.savefig(filepath)
     plt.close()
     print(f"Net GEX chart saved to {filepath}")
-
-def export_for_ai(df: pd.DataFrame, filename: str):
-    """
-    Export key fields for AI consumption in JSON, containing:
-      • gex_summary: strike, open_interest, gex
-      • chain_by_strike: full chain sorted by strike with GEX included
-    Writes into CHART_DIR.
-    """
-    # 1) Sort by strike
-    chain_sorted = df.sort_values(by='Strike').reset_index(drop=True)
-
-    # 2) Build GEX summary list
-    gex_summary = chain_sorted[['Strike', 'Open Int', 'GEX']].rename(columns={
-        'Strike': 'strike',
-        'Open Int': 'open_interest',
-        'GEX': 'gex'
-    }).to_dict(orient='records')
-
-    # 3) Build full chain list
-    chain_by_strike = chain_sorted.rename(columns={
-        'Strike': 'strike',
-        'Last': 'last_price',
-        'Change': 'change',
-        '%Chg': 'percent_change',
-        'Open Int': 'open_interest',
-        'IV': 'implied_volatility',
-        'Volume': 'volume',
-        'GEX': 'gex'
-    }).to_dict(orient='records')
-
-    export_obj = {
-        'gex_summary': gex_summary,
-        'chain_by_strike': chain_by_strike
-    }
-
-    # 4) Write JSON into CHART_DIR
-    filepath = os.path.join(CHART_DIR, filename)
-    with open(filepath, 'w') as f:
-        json.dump(export_obj, f, indent=2)
-
-    print(f"Exported {len(chain_by_strike)} strikes with GEX to {filepath}")
-
 
 def main():
     symbol = input("Enter ticker symbol (e.g. AAPL): ").upper()
@@ -373,11 +393,11 @@ def main():
     print(f"Total Net GEX:   {net_gex_calls - net_gex_puts:,.0f}")
 
     # print tables
-    print("=== Calls ===")
-    print(calls_slice.to_string(index=False))
+    # print("=== Calls ===")
+    # print(calls_slice.to_string(index=False))
 
-    print("\n=== Puts ===")
-    print(puts_slice.to_string(index=False))
+    # print("\n=== Puts ===")
+    # print(puts_slice.to_string(index=False))
 
     
 
@@ -386,23 +406,23 @@ def main():
     metrics_calls.columns = calls_gex['Strike']
     metrics_puts = puts_gex[['GEX','Open Int']].T
     metrics_puts.columns = puts_gex['Strike']
-    plot_heatmap(metrics_calls, f"{symbol} {expiry} Calls: GEX & Open Interest")
-    plot_heatmap(metrics_puts, f"{symbol} {expiry} Puts: GEX & Open Interest")
+    plot_heatmap(metrics_calls, "Calls: GEX & Open Interest", symbol, expiry)
+    plot_heatmap(metrics_puts, "Puts: GEX & Open Interest", symbol, expiry)
     plot_net_gex(
         calls_gex,
         puts_gex,
-        f"{symbol} {expiry} Net Gamma Exposure",  # title
+        "Net Gamma Exposure",
         symbol,
         expiry,
         current_price=price,                      # <-- must be the float price
         chart_dir=CHART_DIR
     )
     
-    plot_gex_oi_chart(calls_gex,   f"{symbol} {expiry} Calls: GEX vs Open Interest")
-    plot_gex_oi_chart(puts_gex,   f"{symbol} {expiry} Puts: GEX vs Open Interest")
+    plot_gex_oi_chart(calls_gex, "Calls: GEX vs Open Interest", price, symbol, expiry)
+    plot_gex_oi_chart(puts_gex, "Puts: GEX vs Open Interest", price, symbol, expiry)
 
-    export_for_ai(calls_gex, f'{symbol} {expiry} calls_gex_export.json')
-    export_for_ai(puts_gex,  f'{symbol} {expiry} puts_gex_export.json')
+    export_for_ai(calls_gex, symbol, expiry, "calls_gex_export.json")
+    export_for_ai(puts_gex, symbol, expiry, "puts_gex_export.json")
 
     # example sorts
     # print(f"\nTop {STRIKE_RANGE} Calls by Open Interest:")

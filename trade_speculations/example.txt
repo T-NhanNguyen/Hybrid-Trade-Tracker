@@ -40,7 +40,7 @@ Content:
     ],
     "expected_move": 7.25,
     "iv_rank": 71.68,
-    "iv_percentile": null,
+    "iv_percentile": 0,
     "liquidity_notes": "Very high OI and volume at 36\u201340C; $38C has 3.9k OI and 4.9k volume. $36C and $37C both show robust volume as well. IV is high, but not at extremes\u2014supports debit structures."
   },
   "max_pain_price": 35.7,

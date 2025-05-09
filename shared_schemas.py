@@ -6,6 +6,7 @@ from typing import List, Optional, Literal
 class StrikeModel(BaseModel):
     strike: float = Field(..., gt=0, description="Strike price, must be positive")
     type: Literal['call', 'put'] = Field(..., description="Option type: 'call' or 'put'")
+    expiration_date: date = Field(..., description="Expiration date for this contract (YYYY-MM-DD)")
 
 
 class RationaleModel(BaseModel):
