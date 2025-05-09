@@ -108,6 +108,34 @@ class DirectoryMonitorProcess(mp.Process):
         serialized = json.dumps(obj, sort_keys=True, default=_converter).encode('utf-8')
         return hashlib.sha256(serialized).hexdigest()
 
+    def _should_skip(self, p: Path) -> bool:
+        """
+        Return True if p is
+        - our cache file
+        - a hidden/dot file
+        - not a .json
+        - an ADS stream (contains ':')
+        - zero-byte or unreadable
+        """
+        name = p.name
+        if name == CACHE_FILENAME or name.startswith('.'):
+            return True
+
+        if p.suffix.lower() not in ALLOWED_EXTS:
+            return True
+
+        path_str = str(p)
+        if ':' in path_str:
+            return True
+
+        try:
+            if p.stat().st_size == 0:
+                return True
+        except OSError:
+            return True
+
+        return False
+
     def normalize_trade_id(self, tid: str) -> str:
         return tid.strip().upper()
 
@@ -260,20 +288,13 @@ class DirectoryMonitorProcess(mp.Process):
         compare hashes to cached values, and enqueue any new/changed.
         """
         for p in self.input_dir.iterdir():
-            
-            # don’t treat our own cache (or any hidden file) as a trade spec
-            if p.name == CACHE_FILENAME or p.name.startswith('.'):
+            if self._should_skip(p):
                 continue
-            path_str = str(p)
-            if p.suffix.lower() not in ALLOWED_EXTS:
-                continue
-            # skip ADS or zero-byte
-            if ":" in path_str:
-                continue
+
+            # at this point p is a non-empty JSON file we care about…
             try:
-                if p.stat().st_size == 0:
-                    continue
-            except OSError:
+                raw = json.load(p.open(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
                 continue
 
             # load + normalize + validate (same as process_file)
