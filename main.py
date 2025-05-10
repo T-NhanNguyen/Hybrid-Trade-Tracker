@@ -290,7 +290,8 @@ class DirectoryMonitorProcess(mp.Process):
         for p in self.input_dir.iterdir():
             if self._should_skip(p):
                 continue
-
+            path_str = str(p)
+            
             # at this point p is a non-empty JSON file we care about…
             try:
                 raw = json.load(p.open(encoding="utf-8"))
